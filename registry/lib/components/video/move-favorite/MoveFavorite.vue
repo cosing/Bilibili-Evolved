@@ -3,16 +3,16 @@
     v-show="show"
     class="move-favorite be-move-favorite video-toolbar-left-item"
     title="移动收藏"
-    :class="{ ...displayModeClass }"
-    @click.left.self="toggleSelectMode()"
+    :class="{ on: isInTargetFolder, ...displayModeClass }"
+    @click.left.self="toggleMove()"
     @click.right.prevent.self="listShowing = !listShowing"
   >
     <i
       class="move-favorite-icon icon"
-      @click.left="toggleSelectMode()"
+      @click.left="toggleMove()"
       @click.right.prevent="listShowing = !listShowing"
     ></i>
-    <div class="text" @click.left="toggleSelectMode()" @click.right.prevent="listShowing = !listShowing">
+    <div class="text" @click.left="toggleMove()" @click.right.prevent="listShowing = !listShowing">
       移动收藏
     </div>
     <div ref="selectList" class="select-list" :class="{ show: listShowing }">
@@ -29,20 +29,6 @@
       <div v-else class="lists-tip">
         <i>由 RBVP 接管：{{ selectedTargetList.displayName }}</i>
       </div>
-    </div>
-    <div class="source-list" v-if="selectingSource">
-      <div class="source-title">从以下收藏夹选择:</div>
-      <div class="source-items">
-        <div
-          v-for="item in sourceLists"
-          :key="item.id"
-          class="source-item"
-          @click="moveFromFolder(item.id)"
-        >
-          {{ item.displayName }}
-        </div>
-      </div>
-      <div class="cancel-btn" @click="selectingSource = false">取消</div>
     </div>
     <div class="tip" :class="{ show: tipShowing }">{{ tipText }}</div>
   </span>
@@ -81,14 +67,13 @@ export default Vue.extend({
     return {
       show: false,
       aid: unsafeWindow.aid,
+      isInTargetFolder: false,
       tipText: '',
       tipShowing: false,
       tipHandle: 0,
       list: [],
-      sourceLists: [],
       selectedTargetList: EmptyFavoriteList,
       listShowing: false,
-      selectingSource: false,
       displayMode,
       useRbvp: false,
     }
@@ -172,6 +157,7 @@ export default Vue.extend({
           options.targetFolderID = 0
           return
         }
+        this.isInTargetFolder = Boolean(targetFolder.fav_state)
         this.selectedTargetList = {
           id: targetFolder.id,
           displayName: targetFolder.title,
@@ -207,6 +193,7 @@ export default Vue.extend({
           options.targetFolderID = 0
           return
         }
+        this.isInTargetFolder = Boolean(targetFolder.fav_state)
         this.selectedTargetList = {
           id: targetFolder.id,
           displayName: targetFolder.title,
@@ -225,55 +212,41 @@ export default Vue.extend({
         this.tipShowing = false
       }, 2000)
     },
-    async toggleSelectMode() {
+    async toggleMove() {
       if (options.targetFolderID === 0) {
         this.listShowing = true
         return
       }
-      // 加载源收藏夹列表
-      await this.loadSourceLists()
-      this.selectingSource = !this.selectingSource
+      await this.moveToTargetFolder()
     },
-    async loadSourceLists() {
+    async moveToTargetFolder() {
       try {
+        // 先获取所有收藏夹状态
         const json = await getJsonWithCredentials(
           `https://api.bilibili.com/x/v3/fav/folder/created/list-all?type=2&rid=${
             this.aid
           }&up_mid=${getUID()}`,
         )
         if (json.code !== 0) {
-          throw new Error(`获取收藏夹列表失败: ${json.message}`)
+          throw new Error(`获取收藏状态失败: ${json.message}`)
         }
+
         const list: RawFavoriteListItem[] = lodash.get(json, 'data.list', [])
-        // 过滤掉目标收藏夹，只显示其他收藏夹
-        this.sourceLists = list
-          .filter(it => it.id !== options.targetFolderID && it.fav_state === 1)
-          .map(it => ({ id: it.id, displayName: it.title }))
         
-        if (this.sourceLists.length === 0) {
-          this.showTip('视频不在任何其他收藏夹中')
-          this.selectingSource = false
+        // 获取要删除的收藏夹ID列表（除了目标收藏夹外，视频已收藏的其他收藏夹）
+        const delMediaIds = list
+          .filter(it => it.id !== options.targetFolderID && it.fav_state === 1)
+          .map(it => it.id.toString())
+          .join(',')
+
+        const formData = {
+          rid: this.aid,
+          type: 2,
+          add_media_ids: options.targetFolderID.toString(),
+          del_media_ids: delMediaIds,
+          csrf: getCsrf(),
         }
-      } catch (error) {
-        Toast.error(`获取收藏夹列表失败: ${error.message}`, '移动收藏')
-        logError(error)
-      }
-    },
-    async moveFromFolder(sourceId: number) {
-      if (options.targetFolderID === 0) {
-        this.showTip('请先选择目标收藏夹')
-        return
-      }
 
-      const formData = {
-        rid: this.aid,
-        type: 2,
-        add_media_ids: options.targetFolderID.toString(),
-        del_media_ids: sourceId.toString(),
-        csrf: getCsrf(),
-      }
-
-      try {
         const request = new Request('https://api.bilibili.com/x/v3/fav/resource/deal', {
           method: 'POST',
           body: Object.entries(formData)
@@ -288,12 +261,11 @@ export default Vue.extend({
         if (response.code !== 0) {
           throw new Error(response.message)
         }
-        const sourceFolderName = this.sourceLists.find(it => it.id === sourceId)?.displayName || '收藏夹'
+        
+        this.isInTargetFolder = true
         this.showTip(
-          `已从 ${sourceFolderName} 移动到 ${this.selectedTargetList.displayName}`,
+          `已移动至收藏夹: ${this.selectedTargetList.displayName}`,
         )
-        this.selectingSource = false
-        await this.loadSourceLists()
       } catch (error) {
         Toast.error(`移动收藏失败: ${error.message}`, '移动收藏')
         console.error(error)
@@ -331,7 +303,7 @@ export default Vue.extend({
   }
 
   &-icon {
-    font-family: 'move-favorite' !important;
+    font-family: 'quick-favorite' !important;
     font-size: 28px;
     display: inline-block;
     font-style: normal;
@@ -344,7 +316,7 @@ export default Vue.extend({
       font-size: 36px;
     }
     &:after {
-      content: '\ea02';
+      content: '\ea01';
     }
     .video-toolbar-v1 & {
       transform: translateY(1px);
@@ -387,54 +359,6 @@ export default Vue.extend({
     .lists-tip {
       color: #aaa;
       font-size: 12px;
-    }
-  }
-  .source-list {
-    position: absolute;
-    top: calc(100% + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 1000;
-    background: #000d;
-    padding: 12px;
-    border-radius: 4px;
-    color: #eee;
-    min-width: 200px;
-    max-height: 300px;
-    overflow-y: auto;
-    .source-title {
-      font-weight: bold;
-      margin-bottom: 8px;
-      font-size: 12px;
-      color: #aaa;
-    }
-    .source-items {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      margin-bottom: 8px;
-    }
-    .source-item {
-      padding: 6px 8px;
-      border-radius: 2px;
-      cursor: pointer;
-      transition: all 0.2s ease-out;
-      &:hover {
-        background: rgba(255, 255, 255, 0.1);
-        color: #fff;
-      }
-    }
-    .cancel-btn {
-      padding: 6px 8px;
-      border-radius: 2px;
-      background: rgba(255, 100, 100, 0.2);
-      cursor: pointer;
-      text-align: center;
-      font-size: 12px;
-      transition: all 0.2s ease-out;
-      &:hover {
-        background: rgba(255, 100, 100, 0.4);
-      }
     }
   }
 }
